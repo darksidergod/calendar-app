@@ -1,1 +1,7 @@
 *.json
+calendar-server
+calendar-script
+calendar-app
+static
+.cursor
+frontend/node_modules
