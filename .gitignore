@@ -5,3 +5,4 @@ calendar-app
 static
 .cursor
 frontend/node_modules
+*.exe
