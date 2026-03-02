@@ -67,7 +67,7 @@ func (s *CalendarServer) AuthCallbackHandler(w http.ResponseWriter, r *http.Requ
 
 	s.calendar = calendar
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Authenticated"})
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *CalendarServer) ListEventsHandler(w http.ResponseWriter, r *http.Request) {

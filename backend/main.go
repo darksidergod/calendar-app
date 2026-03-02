@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"calendar/server"
 	"embed"
+	"io"
 	"io/fs"
-
 	"net/http"
-	"net/url"
 	"os"
+	"path"
+	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
@@ -23,28 +26,64 @@ type spaFileServer struct {
 }
 
 func (s spaFileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if path == "/" {
-		path = "/index.html"
+	reqPath := r.URL.Path
+	if reqPath == "/" {
+		reqPath = "/index.html"
 	}
-	f, err := s.static.Open(path)
+	// embed.FS.Open needs path without leading slash
+	cleanPath := strings.TrimPrefix(reqPath, "/")
+	if cleanPath == "" {
+		cleanPath = "index.html"
+	}
+	f, err := s.static.Open(cleanPath)
 	if err != nil {
-		r2 := *r
-		r2.URL = &url.URL{Path: "/index.html"}
-		http.FileServer(s.static).ServeHTTP(w, &r2)
+		// SPA fallback: serve index.html for unknown paths
+		serveIndex(w, r, s.static)
 		return
 	}
 	defer f.Close()
 	stat, err := f.Stat()
 	if err != nil || stat.IsDir() {
-		r2 := *r
-		r2.URL = &url.URL{Path: "/index.html"}
-		http.FileServer(s.static).ServeHTTP(w, &r2)
+		serveIndex(w, r, s.static)
 		return
 	}
-	r2 := *r
-	r2.URL = &url.URL{Path: path}
-	http.FileServer(s.static).ServeHTTP(w, &r2)
+	// Serve file directly to avoid FileServer's /index.html -> / redirect loop
+	serveFile(w, r, f, stat, cleanPath)
+}
+
+func serveIndex(w http.ResponseWriter, r *http.Request, fsys http.FileSystem) {
+	f, err := fsys.Open("index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	stat, _ := f.Stat()
+	serveFile(w, r, f, stat, "index.html")
+}
+
+func serveFile(w http.ResponseWriter, r *http.Request, f io.Reader, stat fs.FileInfo, name string) {
+	ext := path.Ext(name)
+	ct := "application/octet-stream"
+	switch ext {
+	case ".html":
+		ct = "text/html; charset=utf-8"
+	case ".js":
+		ct = "application/javascript"
+	case ".css":
+		ct = "text/css"
+	}
+	w.Header().Set("Content-Type", ct)
+	content, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	modTime := stat.ModTime()
+	if modTime.IsZero() {
+		modTime = time.Now()
+	}
+	http.ServeContent(w, r, stat.Name(), modTime, bytes.NewReader(content))
 }
 
 func main() {
@@ -72,7 +111,10 @@ func main() {
 	r.HandleFunc("/callback", server.AuthCallbackHandler)
 	r.HandleFunc("/authurl", server.GetAuthURLHandler)
 
-	staticRoot, _ := fs.Sub(staticFS, "static")
+	staticRoot, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Fatal().Err(err).Msg("unable to get static root")
+	}
 	spaHandler := spaFileServer{static: http.FS(staticRoot)}
 	r.PathPrefix("/").Handler(spaHandler)
 
